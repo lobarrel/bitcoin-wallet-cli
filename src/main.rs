@@ -40,6 +40,8 @@ use std::str::FromStr;
 
 fn main(){
 
+    //prova
+
     //ELECTRUM CLIENT
     let client = Client::new("ssl://electrum.blockstream.info:60002").unwrap();
     let blockchain = ElectrumBlockchain::from(client);
