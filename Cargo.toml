@@ -1,0 +1,12 @@
+[package]
+name = "bdk-wallet"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bdk = { version = "^0.10", default-features = false, features = ["all-keys", "key-value-db", "electrum", "rpc"]}
+dirs-next = "2.0"
+tui = "0.19"
+crossterm = "0.25"
