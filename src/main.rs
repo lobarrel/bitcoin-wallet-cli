@@ -1,4 +1,5 @@
 use std::io;
+use std::ptr::null;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -13,7 +14,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
-use bdk::{bitcoin::Network, sled::Tree};
+use bdk::{bitcoin::Network, sled::Tree, blockchain};
 use bdk::bitcoin::secp256k1::Secp256k1;
 use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
 use bdk::bitcoin::Amount;
@@ -40,12 +41,6 @@ use std::str::FromStr;
 
 fn main(){
 
-    //prova
-
-    //ELECTRUM CLIENT
-    let client = Client::new("ssl://electrum.blockstream.info:60002").unwrap();
-    let blockchain = ElectrumBlockchain::from(client);
-
     //Create a terminal
     //enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
@@ -53,21 +48,34 @@ fn main(){
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
-   
-    loop {
-        //terminal.draw(ui)?;
+    //terminal.draw(ui)
 
-        if let Event::Key(key) = event::read().unwrap() {
-            if let KeyCode::Char('n') = key.code {
-                let wallet: Wallet<ElectrumBlockchain, Tree>;
-                new_wallet(blockchain);    
+    if let Event::Key(key) = event::read().unwrap(){
+        if let KeyCode::Char('n') = key.code {
+            let wallet = new_wallet(); 
+            println!("Wallet successfully created!");
+
+            loop {
+                if let Event::Key(key) = event::read().unwrap(){
+                    if let KeyCode::Char('s') = key.code {
+                        wallet.sync(NoopProgress, None).unwrap();
+                        println!("Your wallet is synchronized!");
+                    }
+                    if let KeyCode::Char('a') = key.code {
+                        println!("Sono dentro");
+                        let address = wallet.get_address(AddressIndex::New).unwrap().address;
+                        println!("Address: {}", address);
+                    }
+                    if let KeyCode::Char('b') = key.code {
+                        let balance = Amount::from_sat(wallet.get_balance().unwrap());
+                        println!("Balance: {}", balance);
+                    }
+                }
+                
             }
-            if let KeyCode::Char('q') = key.code {
-                return ();
-            }
-            
         }
     }
+    
 
     // restore terminal
     disable_raw_mode().unwrap();
@@ -78,14 +86,16 @@ fn main(){
     ).unwrap();
     terminal.show_cursor().unwrap();
 
-    
-
-
-    
+     
 }
 
 
-fn new_wallet(blockchain: ElectrumBlockchain) -> Wallet<ElectrumBlockchain, Tree>{
+fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
+
+    //Electrum client
+    let client = Client::new("ssl://electrum.blockstream.info:60002").unwrap();
+    let blockchain = ElectrumBlockchain::from(client);
+
     //Get descriptors
     let (receive_desc, change_desc) = get_descriptors();
     // Use deterministic wallet name derived from descriptor
@@ -105,24 +115,6 @@ fn new_wallet(blockchain: ElectrumBlockchain) -> Wallet<ElectrumBlockchain, Tree
     //Create the wallet
     let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Regtest, db_tree, blockchain).unwrap();
     return wallet;
-}
-
-
-fn sync_wallet(wallet: Wallet<ElectrumBlockchain, Tree>){
-    wallet.sync(NoopProgress, None).unwrap();
-    println!("The wallet has been synchronized!");
-}
-
-
-fn get_address(wallet: Wallet<ElectrumBlockchain, Tree>){
-    let address = wallet.get_address(AddressIndex::New).unwrap().address;
-    println!("Address: {}", address);
-}
-
-
-fn get_balance(wallet: Wallet<ElectrumBlockchain, Tree>){
-    let balance = Amount::from_sat(wallet.get_balance().unwrap());
-    println!("Balance: {}", balance);
 }
 
 
