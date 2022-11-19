@@ -1,5 +1,6 @@
 use std::io;
 use std::env;
+use bdk::bitcoin::consensus::encode::Error;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -58,51 +59,16 @@ fn main(){
             loop {
                 if let Event::Key(key) = event::read().unwrap(){
                     if let KeyCode::Char('s') = key.code {
-                        wallet.sync(NoopProgress, None).unwrap();
-                        println!("Your wallet is synchronized!");
+                        sync_wallet(&wallet);
                     }
                     if let KeyCode::Char('a') = key.code {
-                        let address = wallet.get_address(AddressIndex::New).unwrap().address;
-                        println!("Address: {}", address);
+                        get_wallet_address(&wallet);
                     }
                     if let KeyCode::Char('b') = key.code {
-                        wallet.sync(NoopProgress, None).unwrap();
-                        let balance = Amount::from_sat(wallet.get_balance().unwrap());
-                        println!("Balance: {}", balance);
+                        get_wallet_balance(&wallet);
                     }
                     if let KeyCode::Char('t') = key.code {
-                        println!("Recipient address: ");
-                        let mut arg1 = String::new();
-                        io::stdin().read_line(&mut arg1).unwrap();
-                        let recipient_address = Address::from_str(&arg1.trim()).unwrap();
-                        println!("Amount (sats): ");
-                        let mut arg2 = String::new();
-                        io::stdin().read_line(&mut arg2).unwrap();
-                        let amount = arg2.trim().parse::<u64>().unwrap();
-
-                        wallet.sync(NoopProgress, None).unwrap();
-                        let mut tx_builder = wallet.build_tx();
-                        tx_builder.set_recipients(vec!((recipient_address.script_pubkey(), amount)));
-
-                        // Finalise the transaction and extract PSBT
-                        let (mut psbt, _) = tx_builder.finish().unwrap();
-
-                        // Set signing option
-                        let signopt = SignOptions {
-                            assume_height: None,
-                            ..Default::default()
-                        };
-
-                        // Sign the above psbt with signing option
-                        wallet.sign(&mut psbt, signopt).unwrap();
-
-                        // Extract the final transaction
-                        let tx = psbt.extract_tx();
-                        let txid = tx.txid();
-
-                        // Broadcast the transaction
-                        wallet.broadcast(tx).unwrap();
-                        println!("Transaction completed successfully!\nTransaction ID: {}", txid);
+                        new_transaction(&wallet).unwrap();
                     }
                     if let KeyCode::Char('q') = key.code {
                         return;
@@ -150,6 +116,61 @@ fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
 }
 
 
+fn sync_wallet(wallet: &Wallet<ElectrumBlockchain, Tree>){
+    wallet.sync(NoopProgress, None).unwrap();
+    println!("Your wallet is synchronized!");
+}
+
+
+fn get_wallet_address(wallet: &Wallet<ElectrumBlockchain, Tree>){
+    let address = wallet.get_address(AddressIndex::New).unwrap().address;
+    println!("Address: {}", address);
+}
+
+
+fn get_wallet_balance(wallet: &Wallet<ElectrumBlockchain, Tree>){
+    wallet.sync(NoopProgress, None).unwrap();
+    let balance = Amount::from_sat(wallet.get_balance().unwrap());
+    println!("Balance: {}", balance);
+}
+
+
+fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Error>{
+    println!("Recipient address: ");
+    let mut arg1 = String::new();
+    io::stdin().read_line(&mut arg1).unwrap();
+    let recipient_address = Address::from_str(&arg1.trim()).unwrap();
+    println!("Amount (sats): ");
+    let mut arg2 = String::new();
+    io::stdin().read_line(&mut arg2).unwrap();
+    let amount = arg2.trim().parse::<u64>().unwrap();
+
+    wallet.sync(NoopProgress, None).unwrap();
+    let mut tx_builder = wallet.build_tx();
+    tx_builder.set_recipients(vec!((recipient_address.script_pubkey(), amount)));
+
+    // Finalise the transaction and extract PSBT
+    let (mut psbt, _) = tx_builder.finish().unwrap();
+
+    // Set signing option
+    let signopt = SignOptions {
+        assume_height: None,
+        ..Default::default()
+    };
+
+    // Sign the above psbt with signing option
+    wallet.sign(&mut psbt, signopt).unwrap();
+
+    // Extract the final transaction
+    let tx = psbt.extract_tx();
+    let txid = tx.txid();
+
+    // Broadcast the transaction
+    wallet.broadcast(tx).unwrap();
+    println!("Transaction completed successfully!\nTransaction ID: {}", txid);
+
+    Ok(())
+}
 
 
 ////GENERATE DESCRIPTORS
