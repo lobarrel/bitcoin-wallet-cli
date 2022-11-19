@@ -1,6 +1,7 @@
 use std::io;
 use std::env;
 use bdk::bitcoin::consensus::encode::Error;
+use crossterm::style::Stylize;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -49,18 +50,16 @@ fn main(){
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).unwrap();
 
-    //terminal.draw(ui)
+    println!("{}", format!("BITCOIN WALLET\n\n").bold());
+    println!("Commands:\nn: create a new wallet\na: get address\nb: get balance\nt: send a transaction\ns: sync the wallet\nq: quit\n");
 
     if let Event::Key(key) = event::read().unwrap(){
         if let KeyCode::Char('n') = key.code {
-            let wallet = new_wallet(); 
-            println!("Wallet successfully created!");
+            let wallet = new_wallet().unwrap(); 
+            println!("{}", format!("Wallet successfully created!").green());
 
             loop {
-                if let Event::Key(key) = event::read().unwrap(){
-                    if let KeyCode::Char('s') = key.code {
-                        sync_wallet(&wallet);
-                    }
+                if let Event::Key(key) = event::read().unwrap(){    
                     if let KeyCode::Char('a') = key.code {
                         get_wallet_address(&wallet);
                     }
@@ -69,6 +68,9 @@ fn main(){
                     }
                     if let KeyCode::Char('t') = key.code {
                         new_transaction(&wallet).unwrap();
+                    }
+                    if let KeyCode::Char('s') = key.code {
+                        sync_wallet(&wallet);
                     }
                     if let KeyCode::Char('q') = key.code {
                         return;
@@ -88,14 +90,14 @@ fn main(){
 }
 
 
-fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
-
+fn new_wallet() -> Result<Wallet<ElectrumBlockchain, Tree>, Error> {
     //Electrum client
-    let client = Client::new("ssl://electrum.blockstream.info:60002").unwrap();
+    let client = Client::new("ssl://electrum.blockstream.info:60002").expect("Connection to Electrum client failed");
     let blockchain = ElectrumBlockchain::from(client);
 
     //Get descriptors
     let (receive_desc, change_desc) = get_descriptors();
+
     // Use deterministic wallet name derived from descriptor
     let wallet_name = wallet_name_from_descriptor(
         &receive_desc,
@@ -105,20 +107,26 @@ fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
     ).unwrap();
 
     //Create datadir
-    let mut datadir = dirs_next::home_dir().unwrap();
+    let mut datadir = dirs_next::home_dir().expect("Home directory not found"); 
     datadir.push(".bdk-example");
     let database = sled::open(datadir).unwrap();
     let db_tree = database.open_tree(wallet_name.clone()).unwrap();
 
     //Create the wallet
-    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Testnet, db_tree, blockchain).unwrap();
-    return wallet;
+    let wallet = Wallet::new(
+        &receive_desc, 
+        Some(&change_desc), 
+        Network::Testnet, 
+        db_tree, 
+        blockchain).unwrap();
+    
+    Ok(wallet) 
 }
 
 
 fn sync_wallet(wallet: &Wallet<ElectrumBlockchain, Tree>){
     wallet.sync(NoopProgress, None).unwrap();
-    println!("Your wallet is synchronized!");
+    println!("{}", format!("Your wallet is synchronized!").green()); 
 }
 
 
@@ -136,16 +144,22 @@ fn get_wallet_balance(wallet: &Wallet<ElectrumBlockchain, Tree>){
 
 
 fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Error>{
+    //Recipient address input
     println!("Recipient address: ");
     let mut arg1 = String::new();
     io::stdin().read_line(&mut arg1).unwrap();
     let recipient_address = Address::from_str(&arg1.trim()).unwrap();
+
+    //Amount input
     println!("Amount (sats): ");
     let mut arg2 = String::new();
     io::stdin().read_line(&mut arg2).unwrap();
     let amount = arg2.trim().parse::<u64>().unwrap();
 
+    //Sync wallet
     wallet.sync(NoopProgress, None).unwrap();
+
+    //Build transaction
     let mut tx_builder = wallet.build_tx();
     tx_builder.set_recipients(vec!((recipient_address.script_pubkey(), amount)));
 
@@ -158,7 +172,7 @@ fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Erro
         ..Default::default()
     };
 
-    // Sign the above psbt with signing option
+    // Sign the above PSBT with signing option
     wallet.sign(&mut psbt, signopt).unwrap();
 
     // Extract the final transaction
@@ -167,13 +181,12 @@ fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Erro
 
     // Broadcast the transaction
     wallet.broadcast(tx).unwrap();
-    println!("Transaction completed successfully!\nTransaction ID: {}", txid);
+    println!("{}\nTransaction ID: {}", format!("Transaction completed successfully!").green(), txid); 
 
     Ok(())
 }
 
 
-////GENERATE DESCRIPTORS
 fn get_descriptors() -> (String, String) {
     // Create a new secp context
     let secp = Secp256k1::new();
