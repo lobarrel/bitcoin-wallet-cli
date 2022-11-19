@@ -1,5 +1,5 @@
 use std::io;
-use std::ptr::null;
+use std::env;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -14,10 +14,11 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
-use bdk::{bitcoin::Network, sled::Tree, blockchain};
+use bdk::{bitcoin::{Network, util::psbt::raw::Key}, sled::Tree, blockchain};
 use bdk::bitcoin::secp256k1::Secp256k1;
 use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
 use bdk::bitcoin::Amount;
+use bdk::bitcoin::Address;
 //use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};
 
 use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig, wallet_name_from_descriptor};
@@ -42,7 +43,6 @@ use std::str::FromStr;
 fn main(){
 
     //Create a terminal
-    //enable_raw_mode().unwrap();
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).unwrap();
     let backend = CrosstermBackend::new(stdout);
@@ -62,13 +62,50 @@ fn main(){
                         println!("Your wallet is synchronized!");
                     }
                     if let KeyCode::Char('a') = key.code {
-                        println!("Sono dentro");
                         let address = wallet.get_address(AddressIndex::New).unwrap().address;
                         println!("Address: {}", address);
                     }
                     if let KeyCode::Char('b') = key.code {
+                        wallet.sync(NoopProgress, None).unwrap();
                         let balance = Amount::from_sat(wallet.get_balance().unwrap());
                         println!("Balance: {}", balance);
+                    }
+                    if let KeyCode::Char('t') = key.code {
+                        println!("Recipient address: ");
+                        let mut arg1 = String::new();
+                        io::stdin().read_line(&mut arg1).unwrap();
+                        let recipient_address = Address::from_str(&arg1.trim()).unwrap();
+                        println!("Amount (sats): ");
+                        let mut arg2 = String::new();
+                        io::stdin().read_line(&mut arg2).unwrap();
+                        let amount = arg2.trim().parse::<u64>().unwrap();
+
+                        wallet.sync(NoopProgress, None).unwrap();
+                        let mut tx_builder = wallet.build_tx();
+                        tx_builder.set_recipients(vec!((recipient_address.script_pubkey(), amount)));
+
+                        // Finalise the transaction and extract PSBT
+                        let (mut psbt, _) = tx_builder.finish().unwrap();
+
+                        // Set signing option
+                        let signopt = SignOptions {
+                            assume_height: None,
+                            ..Default::default()
+                        };
+
+                        // Sign the above psbt with signing option
+                        wallet.sign(&mut psbt, signopt).unwrap();
+
+                        // Extract the final transaction
+                        let tx = psbt.extract_tx();
+                        let txid = tx.txid();
+
+                        // Broadcast the transaction
+                        wallet.broadcast(tx).unwrap();
+                        println!("Transaction completed successfully!\nTransaction ID: {}", txid);
+                    }
+                    if let KeyCode::Char('q') = key.code {
+                        return;
                     }
                 }
                 
@@ -78,12 +115,7 @@ fn main(){
     
 
     // restore terminal
-    disable_raw_mode().unwrap();
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    ).unwrap();
+    execute!(terminal.backend_mut(),LeaveAlternateScreen).unwrap();
     terminal.show_cursor().unwrap();
 
      
@@ -102,7 +134,7 @@ fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
     let wallet_name = wallet_name_from_descriptor(
         &receive_desc,
         Some(&change_desc),
-        Network::Regtest,
+        Network::Testnet,
         &Secp256k1::new()
     ).unwrap();
 
@@ -113,7 +145,7 @@ fn new_wallet() -> Wallet<ElectrumBlockchain, Tree>{
     let db_tree = database.open_tree(wallet_name.clone()).unwrap();
 
     //Create the wallet
-    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Regtest, db_tree, blockchain).unwrap();
+    let wallet = Wallet::new(&receive_desc, Some(&change_desc), Network::Testnet, db_tree, blockchain).unwrap();
     return wallet;
 }
 
@@ -133,7 +165,7 @@ fn get_descriptors() -> (String, String) {
                 Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
     let mnemonic = mnemonic.into_key();
     let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
-    let xprv = xkey.into_xprv(Network::Regtest).unwrap();
+    let xprv = xkey.into_xprv(Network::Testnet).unwrap();
 
     // Create derived privkey from the above master privkey
     // We use the following derivation paths for receive and change keys
