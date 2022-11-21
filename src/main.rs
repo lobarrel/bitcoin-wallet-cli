@@ -1,93 +1,93 @@
-use std::io;
-use std::env;
-use bdk::bitcoin::consensus::encode::Error;
-use crossterm::style::Stylize;
+use std::{
+    io,
+    str::FromStr
+};
 use tui::{
-    backend::{Backend, CrosstermBackend},
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::Span,
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState},
-    Frame, Terminal
+    backend::{CrosstermBackend},
+    Terminal
 };
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, Event, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    style::Stylize,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
+};
+use bdk::{
+    bitcoin::{
+        Network, 
+        secp256k1::Secp256k1,
+        consensus::encode::Error,
+        util::bip32::{DerivationPath, KeySource},
+        Amount,
+        Address
+    }, 
+    sled,
+    sled::{Tree},
+    blockchain::{
+        rpc::wallet_name_from_descriptor,
+        ElectrumBlockchain,
+        NoopProgress
+    },
+    electrum_client::Client,
+    keys::{
+        bip39::{Mnemonic, Language, MnemonicType},
+        DescriptorKey::Secret,
+        GeneratedKey,
+        GeneratableKey,
+        ExtendedKey,
+        DerivableKey,
+        DescriptorKey
+    },
+    miniscript::Segwitv0,
+    Wallet,
+    wallet::{
+        AddressIndex,
+        signer::SignOptions
+    }
 };
 
-use bdk::{bitcoin::{Network, util::psbt::raw::Key}, sled::Tree, blockchain};
-use bdk::bitcoin::secp256k1::Secp256k1;
-use bdk::bitcoin::util::bip32::{DerivationPath, KeySource};
-use bdk::bitcoin::Amount;
-use bdk::bitcoin::Address;
-//use bdk::bitcoincore_rpc::{Auth as rpc_auth, Client, RpcApi};
-
-use bdk::blockchain::rpc::{Auth, RpcBlockchain, RpcConfig, wallet_name_from_descriptor};
-use bdk::blockchain::{ElectrumBlockchain, ConfigurableBlockchain, NoopProgress};
-use bdk::electrum_client::Client;
-
-use bdk::keys::bip39::{Mnemonic, Language, MnemonicType};
-use bdk::keys::{GeneratedKey, GeneratableKey, ExtendedKey, DerivableKey, DescriptorKey};
-use bdk::keys::DescriptorKey::Secret;
-
-use bdk::miniscript::miniscript::Segwitv0;
-
-use bdk::Wallet;
-use bdk::wallet::{AddressIndex, signer::SignOptions};
-
-use bdk::sled;
-
-use std::str::FromStr;
 
 
+fn get_descriptors() -> (String, String) {
+    // Create a new secp context
+    let secp = Secp256k1::new();
+     
+    // You can also set a password to unlock the mnemonic
+    let password = Some("random password".to_string());
 
-fn main(){
+    // Generate a fresh mnemonic, and from there a privatekey
+    let mnemonic: GeneratedKey<_, Segwitv0> =
+                Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
+    let mnemonic = mnemonic.into_key();
+    let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
+    let xprv = xkey.into_xprv(Network::Testnet).unwrap();
 
-    //Create a terminal
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).unwrap();
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).unwrap();
+    // Create derived privkey from the above master privkey
+    // We use the following derivation paths for receive and change keys
+    // receive: "m/84h/1h/0h/0"
+    // change: "m/84h/1h/0h/1" 
+    let mut keys = Vec::new();
 
-    println!("{}", format!("BITCOIN WALLET\n\n").bold());
-    println!("Commands:\nn: create a new wallet\na: get address\nb: get balance\nt: send a transaction\ns: sync the wallet\nq: quit\n");
+    for path in ["m/84h/1h/0h/0", "m/84h/1h/0h/1"] {
+        let deriv_path: DerivationPath = DerivationPath::from_str(path).unwrap();
+        let derived_xprv = &xprv.derive_priv(&secp, &deriv_path).unwrap();
+        let origin: KeySource = (xprv.fingerprint(&secp), deriv_path);
+        let derived_xprv_desc_key: DescriptorKey<Segwitv0> =
+        derived_xprv.into_descriptor_key(Some(origin), DerivationPath::default()).unwrap();
 
-    if let Event::Key(key) = event::read().unwrap(){
-        if let KeyCode::Char('n') = key.code {
-            let wallet = new_wallet().unwrap(); 
-            println!("{}", format!("Wallet successfully created!").green());
-
-            loop {
-                if let Event::Key(key) = event::read().unwrap(){    
-                    if let KeyCode::Char('a') = key.code {
-                        get_wallet_address(&wallet);
-                    }
-                    if let KeyCode::Char('b') = key.code {
-                        get_wallet_balance(&wallet);
-                    }
-                    if let KeyCode::Char('t') = key.code {
-                        new_transaction(&wallet).unwrap();
-                    }
-                    if let KeyCode::Char('s') = key.code {
-                        sync_wallet(&wallet);
-                    }
-                    if let KeyCode::Char('q') = key.code {
-                        return;
-                    }
-                }
-                
-            }
+        // Wrap the derived key with the wpkh() string to produce a descriptor string
+        if let Secret(key, _, _) = derived_xprv_desc_key {
+            let mut desc = "wpkh(".to_string();
+            desc.push_str(&key.to_string());
+            desc.push_str(")");
+            keys.push(desc);
         }
     }
     
-
-    // restore terminal
-    execute!(terminal.backend_mut(),LeaveAlternateScreen).unwrap();
-    terminal.show_cursor().unwrap();
-
-     
+    // Return the keys as a tuple
+    (keys[0].clone(), keys[1].clone())
 }
+
 
 
 fn new_wallet() -> Result<Wallet<ElectrumBlockchain, Tree>, Error> {
@@ -124,10 +124,12 @@ fn new_wallet() -> Result<Wallet<ElectrumBlockchain, Tree>, Error> {
 }
 
 
+
 fn sync_wallet(wallet: &Wallet<ElectrumBlockchain, Tree>){
     wallet.sync(NoopProgress, None).unwrap();
     println!("{}", format!("Your wallet is synchronized!").green()); 
 }
+
 
 
 fn get_wallet_address(wallet: &Wallet<ElectrumBlockchain, Tree>){
@@ -136,11 +138,13 @@ fn get_wallet_address(wallet: &Wallet<ElectrumBlockchain, Tree>){
 }
 
 
+
 fn get_wallet_balance(wallet: &Wallet<ElectrumBlockchain, Tree>){
     wallet.sync(NoopProgress, None).unwrap();
     let balance = Amount::from_sat(wallet.get_balance().unwrap());
     println!("Balance: {}", balance);
 }
+
 
 
 fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Error>{
@@ -187,42 +191,47 @@ fn new_transaction(wallet: &Wallet<ElectrumBlockchain, Tree>) -> Result<(), Erro
 }
 
 
-fn get_descriptors() -> (String, String) {
-    // Create a new secp context
-    let secp = Secp256k1::new();
-     
-    // You can also set a password to unlock the mnemonic
-    let password = Some("random password".to_string());
 
-    // Generate a fresh mnemonic, and from there a privatekey
-    let mnemonic: GeneratedKey<_, Segwitv0> =
-                Mnemonic::generate((MnemonicType::Words12, Language::English)).unwrap();
-    let mnemonic = mnemonic.into_key();
-    let xkey: ExtendedKey = (mnemonic, password).into_extended_key().unwrap();
-    let xprv = xkey.into_xprv(Network::Testnet).unwrap();
+fn main(){
 
-    // Create derived privkey from the above master privkey
-    // We use the following derivation paths for receive and change keys
-    // receive: "m/84h/1h/0h/0"
-    // change: "m/84h/1h/0h/1" 
-    let mut keys = Vec::new();
+    //Create a terminal
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen).unwrap();
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).unwrap();
 
-    for path in ["m/84h/1h/0h/0", "m/84h/1h/0h/1"] {
-        let deriv_path: DerivationPath = DerivationPath::from_str(path).unwrap();
-        let derived_xprv = &xprv.derive_priv(&secp, &deriv_path).unwrap();
-        let origin: KeySource = (xprv.fingerprint(&secp), deriv_path);
-        let derived_xprv_desc_key: DescriptorKey<Segwitv0> =
-        derived_xprv.into_descriptor_key(Some(origin), DerivationPath::default()).unwrap();
+    println!("{}", format!("BITCOIN WALLET\n\n").bold());
+    println!("Commands:\nn: create a new wallet\na: get address\nb: get balance\nt: send a transaction\ns: sync the wallet\nq: quit\n");
 
-        // Wrap the derived key with the wpkh() string to produce a descriptor string
-        if let Secret(key, _, _) = derived_xprv_desc_key {
-            let mut desc = "wpkh(".to_string();
-            desc.push_str(&key.to_string());
-            desc.push_str(")");
-            keys.push(desc);
+    if let Event::Key(key) = event::read().unwrap(){
+        if let KeyCode::Char('n') = key.code {
+            let wallet = new_wallet().unwrap(); 
+            println!("{}", format!("Wallet successfully created!").green());
+
+            loop {
+                if let Event::Key(key) = event::read().unwrap(){    
+                    if let KeyCode::Char('a') = key.code {
+                        get_wallet_address(&wallet);
+                    }
+                    if let KeyCode::Char('b') = key.code {
+                        get_wallet_balance(&wallet);
+                    }
+                    if let KeyCode::Char('t') = key.code {
+                        new_transaction(&wallet).unwrap();
+                    }
+                    if let KeyCode::Char('s') = key.code {
+                        sync_wallet(&wallet);
+                    }
+                    if let KeyCode::Char('q') = key.code {
+                        return;
+                    }
+                }
+                
+            }
         }
     }
     
-    // Return the keys as a tuple
-    (keys[0].clone(), keys[1].clone())
+    // restore terminal
+    execute!(terminal.backend_mut(),LeaveAlternateScreen).unwrap();
+    terminal.show_cursor().unwrap();
 }
